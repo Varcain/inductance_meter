@@ -4,24 +4,18 @@
 #include "stm32f1xx_hal_conf.h"
 #include "lcd.h"
 
-#define PI 3.141592654f
-#define BUF_SIZE	1024
+#define PI 3.14159265358979323846
+#define BUF_SIZE 512
 
 volatile uint32_t gDelayMS;
+volatile uint32_t gICVal1Buf[BUF_SIZE];
+volatile uint32_t gICVal2Buf[BUF_SIZE];
+volatile uint32_t gFBI;
+volatile uint16_t gCaptureIndex = 0;
 volatile uint8_t gCapturing;
 
-uint32_t gFreqBuf[BUF_SIZE];
-uint32_t gFBI;
-
-/* Capture index */
-uint16_t               gCaptureIndex = 0;
-
-/* Captured Values */
-uint32_t               gIC2Value1 = 0;
-uint32_t               gIC2Value2 = 0;
-
-const double_t c_osc = 0.00000034;
-const double_t l_osc = 0.000001;
+const double_t c_osc = 0.0000005;
+const double_t l_osc = 0.00001;
 
 TIM_HandleTypeDef gTimHandle;
 
@@ -33,7 +27,7 @@ int main(void)
 	GPIO_InitTypeDef gpioInit;
 	TIM_IC_InitTypeDef timIcInit;
 	double_t ind;
-	uint32_t freq;
+	uint32_t freq, tempFreq, clock, i;
 
 	HAL_Init();
 	SystemClock_Config();
@@ -77,8 +71,8 @@ int main(void)
 
 	timIcInit.ICPolarity = TIM_ICPOLARITY_RISING;
 	timIcInit.ICSelection = TIM_ICSELECTION_DIRECTTI;
-	timIcInit.ICPrescaler = TIM_ICPSC_DIV4;
-	timIcInit.ICFilter = 0;
+	timIcInit.ICPrescaler = TIM_ICPSC_DIV8;
+	timIcInit.ICFilter = 0xB;
 
 	HAL_TIM_IC_Init(&gTimHandle);
 	HAL_TIM_IC_ConfigChannel(&gTimHandle, &timIcInit, TIM_CHANNEL_1);
@@ -89,12 +83,19 @@ int main(void)
 
 	lcd_init();
 
+	clock = HAL_RCC_GetPCLK2Freq();
+
 	while (1) {
 		while (gCapturing);
 
 		freq = 0;
-		for (gFBI = 0; gFBI < BUF_SIZE; gFBI++) {
-			freq += gFreqBuf[gFBI];
+		for (i = 0; i < BUF_SIZE; i++) {
+			if (gICVal2Buf[i] > gICVal1Buf[i]) {
+				tempFreq = clock / (gICVal2Buf[i] - gICVal1Buf[i]);
+			} else if (gICVal2Buf[i] < gICVal1Buf[i]) {
+				tempFreq = clock / ((0xFFFF - gICVal1Buf[i]) + gICVal2Buf[i]);
+			}
+			freq += (tempFreq * 8);
 		}
 		freq /= BUF_SIZE;
 		ind = (pow((1 / (2 * PI * freq)), 2));
@@ -120,7 +121,7 @@ int main(void)
 
 		gFBI = 0;
 		gCapturing = 1;
-		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+		HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
 		HAL_TIM_IC_Start_IT(&gTimHandle, TIM_CHANNEL_1);
 	}
 }
@@ -179,34 +180,16 @@ void SystemClock_Config(void)
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
-	uint32_t clock, diffCapture;
-
 	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
 		if (gCaptureIndex == 0) {
-			gIC2Value1 = HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
+			gICVal1Buf[gFBI] = HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
 			gCaptureIndex = 1;
 		} else if (gCaptureIndex == 1) {
-			gIC2Value2 = HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
-			/* Capture computation */
-			if (gIC2Value2 > gIC2Value1) {
-				diffCapture = (gIC2Value2 - gIC2Value1);
-			} else if (gIC2Value2 < gIC2Value1) {
-				diffCapture = ((0xFFFF - gIC2Value1) + gIC2Value2);
-			} else {
-				diffCapture = 0;
-				gCaptureIndex = 0;
-			}
-
-			if (diffCapture != 0) {
-				clock = HAL_RCC_GetPCLK2Freq();
-				gFreqBuf[gFBI++] = clock / diffCapture * 4;
-				gCaptureIndex = 0;
-
-				if (gFBI == BUF_SIZE) {
-					gCapturing = 0;
-					HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-					HAL_TIM_IC_Stop_IT(&gTimHandle, TIM_CHANNEL_1);
-				}
+			gICVal2Buf[gFBI++] = HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
+			gCaptureIndex = 0;
+			if (gFBI == BUF_SIZE) {
+				gCapturing = 0;
+				HAL_TIM_IC_Stop_IT(&gTimHandle, TIM_CHANNEL_1);
 			}
 		}
 	}
@@ -214,7 +197,9 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 
 void TIM1_BRK_TIM15_IRQHandler(void)
 {
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
 	HAL_TIM_IRQHandler(&gTimHandle);
+	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
 }
 
 void SysTick_Handler(void)
