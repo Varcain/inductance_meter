@@ -94,6 +94,8 @@ int main(void)
 				tempFreq = clock / (gICVal2Buf[i] - gICVal1Buf[i]);
 			} else if (gICVal2Buf[i] < gICVal1Buf[i]) {
 				tempFreq = clock / ((0xFFFF - gICVal1Buf[i]) + gICVal2Buf[i]);
+			} else {
+				tempFreq = 0;
 			}
 			freq += (tempFreq * 8);
 		}
