@@ -5,14 +5,19 @@
 #include "lcd.h"
 
 #define PI 3.14159265358979323846
-#define BUF_SIZE 512
+#define SMALL_L_BUF_SIZE 512
+#define BIG_L_BUF_SIZE 8
 
 volatile uint32_t gDelayMS;
-volatile uint32_t gICVal1Buf[BUF_SIZE];
-volatile uint32_t gICVal2Buf[BUF_SIZE];
+volatile uint32_t gICVal1Buf[SMALL_L_BUF_SIZE];
+volatile uint32_t gICVal2Buf[SMALL_L_BUF_SIZE];
 volatile uint32_t gFBI;
 volatile uint16_t gCaptureIndex = 0;
 volatile uint8_t gCapturing;
+volatile uint8_t gBigL = 0;
+
+uint32_t gClock;
+uint32_t bufSize;
 
 const double_t c_osc = 0.0000005;
 const double_t l_osc = 0.00001;
@@ -21,13 +26,14 @@ TIM_HandleTypeDef gTimHandle;
 
 void SystemClock_Config(void);
 void delay(uint32_t delay);
+void setBigL(uint8_t bigL);
 
 int main(void)
 {
 	GPIO_InitTypeDef gpioInit;
 	TIM_IC_InitTypeDef timIcInit;
 	double_t ind;
-	uint32_t freq, tempFreq, clock, i;
+	uint32_t freq, tempFreq, i;
 
 	HAL_Init();
 	SystemClock_Config();
@@ -57,6 +63,15 @@ int main(void)
 	gpioInit.Speed = GPIO_SPEED_HIGH;
 	HAL_GPIO_Init(GPIOB, &gpioInit);
 
+	gpioInit.Pin = GPIO_PIN_0;
+	gpioInit.Mode = GPIO_MODE_IT_RISING;
+	gpioInit.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(GPIOA, &gpioInit);
+
+	/* Enable and set EXTI line 0 Interrupt to the lowest priority */
+	HAL_NVIC_SetPriority(EXTI0_IRQn, 2, 0);
+	HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
 	__HAL_AFIO_REMAP_TIM15_ENABLE();
 
 	HAL_NVIC_SetPriority(TIM1_BRK_TIM15_IRQn, 0, 1);
@@ -83,23 +98,24 @@ int main(void)
 
 	lcd_init();
 
-	clock = HAL_RCC_GetPCLK2Freq();
+	gClock = HAL_RCC_GetPCLK2Freq();
+	bufSize = SMALL_L_BUF_SIZE;
 
 	while (1) {
 		while (gCapturing);
 
 		freq = 0;
-		for (i = 0; i < BUF_SIZE; i++) {
+		for (i = 0; i < bufSize; i++) {
 			if (gICVal2Buf[i] > gICVal1Buf[i]) {
-				tempFreq = clock / (gICVal2Buf[i] - gICVal1Buf[i]);
+				tempFreq = gClock / (gICVal2Buf[i] - gICVal1Buf[i]);
 			} else if (gICVal2Buf[i] < gICVal1Buf[i]) {
-				tempFreq = clock / ((0xFFFF - gICVal1Buf[i]) + gICVal2Buf[i]);
+				tempFreq = gClock / ((0xFFFF - gICVal1Buf[i]) + gICVal2Buf[i]);
 			} else {
 				tempFreq = 0;
 			}
 			freq += (tempFreq * 8);
 		}
-		freq /= BUF_SIZE;
+		freq /= bufSize;
 		ind = (pow((1 / (2 * PI * freq)), 2));
 		ind /= c_osc;
 		ind -= l_osc;
@@ -111,9 +127,12 @@ int main(void)
 		} else if (ind < 0.001 && ind >= 0.000001) {
 			lcd_write_number(roundf(ind * 1000000));
 			lcd_write_string("uH");
-		} else if (ind >= 0.001) {
+		} else if (ind < 1.0 && ind >= 0.001) {
 			lcd_write_number(roundf(ind * 1000));
 			lcd_write_string("mH");
+		} else {
+			lcd_write_number(roundf(ind));
+			lcd_write_string("H");
 		}
 		lcd_set_line(1);
 		lcd_write_string("Freq:");
@@ -124,6 +143,7 @@ int main(void)
 		gFBI = 0;
 		gCapturing = 1;
 		HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
+		setBigL(gBigL);
 		HAL_TIM_IC_Start_IT(&gTimHandle, TIM_CHANNEL_1);
 	}
 }
@@ -180,6 +200,25 @@ void SystemClock_Config(void)
 	}
 }
 
+void setBigL(uint8_t bigL)
+{
+	HAL_TIM_IC_Stop_IT(&gTimHandle, TIM_CHANNEL_1);
+
+	if (bigL == 0) {
+		gTimHandle.Init.Prescaler = 0;
+		bufSize = SMALL_L_BUF_SIZE;
+		gClock = HAL_RCC_GetPCLK2Freq();
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+	} else {
+		gTimHandle.Init.Prescaler = 119;
+		bufSize = BIG_L_BUF_SIZE;
+		gClock = HAL_RCC_GetPCLK2Freq() / 120;
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+	}
+	HAL_TIM_IC_Init(&gTimHandle);
+	HAL_TIM_IC_Start_IT(&gTimHandle, TIM_CHANNEL_1);
+}
+
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
 	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
@@ -189,7 +228,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 		} else if (gCaptureIndex == 1) {
 			gICVal2Buf[gFBI++] = HAL_TIM_ReadCapturedValue(&gTimHandle, TIM_CHANNEL_1);
 			gCaptureIndex = 0;
-			if (gFBI == BUF_SIZE) {
+			if (gFBI == bufSize) {
 				gCapturing = 0;
 				HAL_TIM_IC_Stop_IT(&gTimHandle, TIM_CHANNEL_1);
 			}
@@ -202,6 +241,20 @@ void TIM1_BRK_TIM15_IRQHandler(void)
 	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
 	HAL_TIM_IRQHandler(&gTimHandle);
 	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if (GPIO_Pin == GPIO_PIN_0)
+	{
+		gBigL ^= 1;
+		gCapturing = 0;
+	}
+}
+
+void EXTI0_IRQHandler(void)
+{
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
 }
 
 void SysTick_Handler(void)
