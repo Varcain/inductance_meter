@@ -1,0 +1,2 @@
+schematics schem/osc.sch
+output-name pcb/board
