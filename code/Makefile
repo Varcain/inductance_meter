@@ -10,34 +10,26 @@ STM32CUBE_PATH = /home/limak/Downloads/STM32Cube_FW_F1_V1.2.0
 OBJ_DIR		= obj
 OUT_DIR		= out
 
+PROJ_NAME := $(addprefix $(OUT_DIR)/, $(PROJ_NAME))
+
 # Set Tools
-CC	= $(TC)-gcc
-LD	= $(TC)-ld
-AR	= $(TC)-ar
+CC		= $(TC)-gcc
+LD		= $(TC)-ld
+AR		= $(TC)-ar
 OBJCOPY	= $(TC)-objcopy
 OBJDUMP	= $(TC)-objdump
 SIZE	= $(TC)-size
 
 # Set Dirs
-HAL_DIR		= $(STM32CUBE_PATH)/Drivers/STM32F1xx_HAL_Driver/Src
-USER_DIR	= src
-ASM_DIR		= src
-
-# Set Sources
-HAL_SRCS	= $(wildcard $(HAL_DIR)/*.c)
-USER_SRCS	= $(wildcard $(USER_DIR)/*.c)
-ASM_SRCS	= $(wildcard $(ASM_DIR)/*.s)
-
-# Set Objects
-HAL_OBJS	= $(addprefix $(OBJ_DIR)/,$(notdir $(HAL_SRCS:.c=.o)))
-USER_OBJS	= $(addprefix $(OBJ_DIR)/,$(notdir $(USER_SRCS:.c=.o)))
-ASM_OBJS	= $(addprefix $(OBJ_DIR)/,$(notdir $(ASM_SRCS:.s=.o)))
+SRC_DIRS = \
+$(STM32CUBE_PATH)/Drivers/STM32F1xx_HAL_Driver/Src \
+src
 
 # Set Include Paths
 INCLUDES 	=	-I$(STM32CUBE_PATH)/Drivers/CMSIS/Include/ \
-			-I$(STM32CUBE_PATH)/Drivers/CMSIS/Device/ST/STM32F1xx/Include/ \
-			-I$(STM32CUBE_PATH)/Drivers/STM32F1xx_HAL_Driver/Inc \
-			-Iinc/
+				-I$(STM32CUBE_PATH)/Drivers/CMSIS/Device/ST/STM32F1xx/Include/ \
+				-I$(STM32CUBE_PATH)/Drivers/STM32F1xx_HAL_Driver/Inc \
+				-Iinc/
 
 # Set Board
 DEFINES 	= -DSTM32F100xB
@@ -55,45 +47,51 @@ ASFLAGS 	= -g -Wa,--warn -x assembler-with-cpp -mcpu=cortex-m3 -mthumb
 
 LDFLAGS 	= -g -Tstm32f100rb_flash.ld $(LIBS) \
 			-Xlinker --gc-sections \
-			-Wl,-Map,$(OUT_DIR)/$(PROJ_NAME).map
+			-Wl,-Map,$(PROJ_NAME).map
+
+# Set Sources
+C_SRCS := $(foreach dir, $(SRC_DIRS),$(wildcard $(dir)/*c))
+# Set Sources
+S_SRCS := $(foreach dir, $(SRC_DIRS),$(wildcard $(dir)/*s))
+# Set Objects
+OBJS := $(foreach src, $(C_SRCS),$(addprefix $(OBJ_DIR)/,$(notdir $(C_SRCS:.c=.o))))
+OBJS += $(foreach src, $(S_SRCS),$(addprefix $(OBJ_DIR)/,$(notdir $(S_SRCS:.s=.o))))
 
 # Default Target
-all: mkdir $(OUT_DIR)/$(PROJ_NAME).hex $(OUT_DIR)/$(PROJ_NAME).lst info
+all: mkdir $(PROJ_NAME).hex $(PROJ_NAME).lst info
 
 # elf Target
-$(OUT_DIR)/$(PROJ_NAME).elf: $(HAL_OBJS) $(USER_OBJS) $(ASM_OBJS)
+$(PROJ_NAME).elf: $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 	@echo $@
 
 # bin Target
-$(OUT_DIR)/$(PROJ_NAME).bin: $(OUT_DIR)/$(PROJ_NAME).elf
-	$(OBJCOPY) -O binary $(OUT_DIR)/$(PROJ_NAME).elf $(OUT_DIR)/$(PROJ_NAME).bin
+$(PROJ_NAME).bin: $(PROJ_NAME).elf
+	$(OBJCOPY) -O binary $(PROJ_NAME).elf $(PROJ_NAME).bin
 	@echo $@
 
-$(OUT_DIR)/$(PROJ_NAME).hex: $(OUT_DIR)/$(PROJ_NAME).elf
-	$(OBJCOPY) -O ihex $(OUT_DIR)/$(PROJ_NAME).elf $(OUT_DIR)/$(PROJ_NAME).hex
+$(PROJ_NAME).hex: $(PROJ_NAME).elf
+	$(OBJCOPY) -O ihex $(PROJ_NAME).elf $(PROJ_NAME).hex
 	@echo $@
 
-$(OUT_DIR)/$(PROJ_NAME).lst: $(OUT_DIR)/$(PROJ_NAME).elf
-	@$(OBJDUMP) -h -S $(OUT_DIR)/$(PROJ_NAME).elf > $(OUT_DIR)/$(PROJ_NAME).lst
+$(PROJ_NAME).lst: $(PROJ_NAME).elf
+	@$(OBJDUMP) -h -S $(PROJ_NAME).elf > $(PROJ_NAME).lst
 	@echo $@
 
 # Display Memory Usage Info
-info: $(OUT_DIR)/$(PROJ_NAME).elf
-	@$(SIZE) --format=berkeley $(OUT_DIR)/$(PROJ_NAME).elf
+info: $(PROJ_NAME).elf
+	@$(SIZE) --format=berkeley $(PROJ_NAME).elf
 
-# Rule for HAL .c files
-$(OBJ_DIR)/%.o: $(HAL_DIR)/%.c
+vpath %.c $(SRC_DIRS)
+vpath %.s $(SRC_DIRS)
+
+# Rule for .c files
+$(OBJ_DIR)/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 	@echo $@
 
-# Rule for user .c files
-$(OBJ_DIR)/%.o: $(USER_DIR)/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-	@echo $@
-
-# Rule for user .s files
-$(OBJ_DIR)/%.o: $(ASM_DIR)/%.s
+# Rule for .s files
+$(OBJ_DIR)/%.o: %.s
 	$(CC) $(ASFLAGS) -c -o $@ $<
 	@echo $@
 
@@ -101,6 +99,8 @@ $(OBJ_DIR)/%.o: $(ASM_DIR)/%.s
 mkdir:
 	@mkdir -p $(OBJ_DIR)
 	@mkdir -p $(OUT_DIR)
+
+print-%  : ; @echo $* = $($*)
 
 # Clean Target
 clean:
